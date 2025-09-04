@@ -8,6 +8,8 @@ use crate::prelude::*;
 pub mod preferential_attachment;
 pub mod random_attachment;
 
+pub mod erdos_renyl;
+
 pub(crate) fn next_id<'graph, G: GraphViewOps<'graph>>(g: &G, max_gid: Option<GID>) -> GID {
     let max_gid = max_gid.unwrap_or_else(|| g.nodes().id().max().unwrap_or(GID::U64(0)));
     match max_gid {

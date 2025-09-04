@@ -4,9 +4,9 @@
 //!
 //! ```
 //! use raphtory::prelude::*;
-//! use raphtory::graphgen::erdos_renyl::erdos_renyl;
+//! use raphtory::graphgen::erdos_renyi::erdos_renyi;
 //! let graph = Graph::new();
-//! erdos_renyl(&graph, 1000, 0.1, None);
+//! erdos_renyi(&graph, 1000, 0.1, None);
 //! ```
 
 
@@ -39,9 +39,9 @@ use super::next_id;
 /// # Example
 /// ```
 /// let graph = Graph::new();
-/// erdos_renyl(&graph, 10, 0.2, None);
+/// erdos_renyi(&graph, 10, 0.2, None);
 /// ```
-pub fn erdos_renyl(graph: &Graph, n_nodes: usize, p: f64, seed: Option<[u8; 32]>) {
+pub fn erdos_renyi(graph: &Graph, n_nodes: usize, p: f64, seed: Option<[u8; 32]>) {
     let mut rng: StdRng;
     if let Some(seed_value) = seed {
         rng = StdRng::from_seed(seed_value);
@@ -79,12 +79,12 @@ mod tests {
     use rand::SeedableRng;
 
     #[test]
-    fn test_erdos_renyl_small_graph() {
+    fn test_erdos_renyi_small_graph() {
         let graph = Graph::new();
         let n_nodes = 5;
         let p = 0.5;
         let seed = Some([1u8; 32]);
-        erdos_renyl(&graph, n_nodes, p, seed);
+        erdos_renyi(&graph, n_nodes, p, seed);
         let node_count = graph.nodes().id().iter_values().count();
         assert_eq!(node_count, n_nodes);
         let edge_count = graph.edges().into_iter().count();
@@ -93,23 +93,23 @@ mod tests {
     }
 
     #[test]
-    fn test_erdos_renyl_zero_probability() {
+    fn test_erdos_renyi_zero_probability() {
         let graph = Graph::new();
         let n_nodes = 4;
         let p = 0.0;
         let seed = Some([2u8; 32]);
-        erdos_renyl(&graph, n_nodes, p, seed);
+        erdos_renyi(&graph, n_nodes, p, seed);
         let edge_count = graph.edges().into_iter().count();
         assert_eq!(edge_count, 0);
     }
 
     #[test]
-    fn test_erdos_renyl_full_probability() {
+    fn test_erdos_renyi_full_probability() {
         let graph = Graph::new();
         let n_nodes = 3;
         let p = 1.0;
         let seed = Some([3u8; 32]);
-        erdos_renyl(&graph, n_nodes, p, seed);
+        erdos_renyi(&graph, n_nodes, p, seed);
         let edge_count = graph.edges().into_iter().count();
         assert_eq!(edge_count, n_nodes * (n_nodes - 1));
     }

@@ -5,6 +5,7 @@ use crate::{
     graphgen::{
         preferential_attachment::ba_preferential_attachment as pa,
         random_attachment::random_attachment as ra,
+        erdos_renyi::erdos_renyi as er,
     },
     python::graph::graph::PyGraph,
 };
@@ -66,4 +67,10 @@ pub fn ba_preferential_attachment(
     seed: Option<[u8; 32]>,
 ) {
     pa(&g.graph, nodes_to_add, edges_per_step, seed);
+}
+
+#[pyfunction]
+#[pyo3[signature = (g, n_nodes, p, seed=None)]]
+pub fn erdos_renyi(g: &PyGraph, n_nodes: usize, p: f64, seed: Option<[u8; 32]>) {
+    er(&g.graph, n_nodes, p, seed);
 }

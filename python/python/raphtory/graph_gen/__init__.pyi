@@ -26,7 +26,7 @@ from os import PathLike
 import networkx as nx  # type: ignore
 import pyvis  # type: ignore
 
-__all__ = ['random_attachment', 'ba_preferential_attachment', "erdos_renyi"]
+__all__ = ['random_attachment', 'ba_preferential_attachment']
 def random_attachment(g: Any, nodes_to_add: Any, edges_per_step: Any, seed: Any = None):
     """
     Generates a graph using the random attachment model
@@ -71,20 +71,3 @@ def ba_preferential_attachment(g: Any, nodes_to_add: Any, edges_per_step: Any, s
     None
     """
 
-def erdos_renyi(g: Any, n_nodes: Any, p: Any, seed: Any = None):
-   """
-    Generates a graph using the Erdos-Renyi random graph model.
-
-    This function adds a specified number of nodes to the given graph, and then,
-    for each possible pair of distinct nodes, adds a directed edge with probability `probability`.
-    The process can be made deterministic by providing a 32-byte seed.
-
-    Arguments:
-      g: The graph you wish to add nodes and edges to
-      n_nodes: The number of nodes to add to the graph
-      p: The probability of creating an edge between any two nodes (0.0 = no edges, 1.0 = fully connected)
-      seed: Optional 32-byte array used as the random seed (for reproducibility)
-
-    Returns:
-      None 
-    """

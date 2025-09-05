@@ -69,6 +69,20 @@ pub fn ba_preferential_attachment(
     pa(&g.graph, nodes_to_add, edges_per_step, seed);
 }
 
+/// Generates a graph using the Erdos-Renyi random graph model.
+///
+/// This function adds a specified number of nodes to the given graph, and then
+/// for each possible pair of distinct nodes, adds a directed edge with probability `p`.
+/// The process can be made deterministic by providing a 32-byte seed.
+///
+/// Arguments:
+///   g: The graph you wish to add nodes and edges to
+///   n_nodes: The number of nodes to add to the graph
+///   p: The probability of creating an edge between any two nodes (0.0 = no edges, 1.0 = fully connected)
+///   seed: Optional 32-byte array used as the random seed (for reproducibility)
+///
+/// Returns:
+///   None
 #[pyfunction]
 #[pyo3[signature = (g, n_nodes, p, seed=None)]]
 pub fn erdos_renyi(g: &PyGraph, n_nodes: usize, p: f64, seed: Option<[u8; 32]>) {

@@ -17,7 +17,7 @@ use crate::{
     },
     prelude::{NodeStateOps, NO_PROPS},
 };
-use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use rand::{rngs::StdRng, SeedableRng};
 use tracing::error;
 use rand::Rng;
 use super::next_id;
@@ -76,7 +76,6 @@ pub fn erdos_renyi(graph: &Graph, n_nodes: usize, p: f64, seed: Option<[u8; 32]>
 mod tests {
     use super::*;
     use crate::prelude::*;
-    use rand::SeedableRng;
 
     #[test]
     fn test_erdos_renyi_small_graph() {

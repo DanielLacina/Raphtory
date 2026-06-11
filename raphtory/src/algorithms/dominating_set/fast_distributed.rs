@@ -1,6 +1,7 @@
 use crate::{
-    core::state::{
-        compute_state::ComputeStateVec,
+    core::{
+        entities::VID,
+        state::{accumulator_id::accumulators::hash_set, compute_state::ComputeStateVec},
     },
     db::{
         api::{
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Serialize, Deserialize, Debug, Default)]
 pub struct Fdds {
     pub is_active: bool,
-    pub is_dominated: bool,
+    pub is_covered: bool,
     pub num_undominated_neighbours: usize,
     pub num_undominated_neighbours_rounded_down: usize,
     pub is_candidate: bool,
@@ -33,14 +34,19 @@ pub fn find_dominating_set<G: StaticGraphViewOps>(
     iter_count: usize,
     threads: Option<usize>,
 ) -> TypedNodeState<'static, Fdds, G> {
-    let ctx: Context<G, ComputeStateVec> = g.into();
+    let mut ctx: Context<G, ComputeStateVec> = g.into();
+    let dominating_set = hash_set::<VID>(0);
+    ctx.global_agg(dominating_set);
+    let covered_set = hash_set::<VID>(1);
+    ctx.global_agg(covered_set);
+
 
     let step1: ATask<G, ComputeStateVec, Fdds, _> = ATask::new(
         move |s: &mut EvalNodeView<'_, '_, &'_ G, Fdds, ComputeStateVec>| {
             let undominated = s.neighbours().iter().count();
             let s_state = s.get_mut();
             s_state.is_active = true;
-            s_state.is_dominated = false;
+            s_state.is_covered = false;
             s_state.num_undominated_neighbours = undominated;
             s_state.num_undominated_neighbours_rounded_down = 0;
             s_state.support_count = 0;
@@ -72,10 +78,11 @@ pub fn find_dominating_set<G: StaticGraphViewOps>(
             let my_rounded = s.prev().num_undominated_neighbours_rounded_down;
             let max_undominated_neighbours_rounded_down = s
                 .neighbours()
+                .neighbours()
                 .iter()
                 .map(|n| n.prev().num_undominated_neighbours_rounded_down)
                 .max()
-                .unwrap_or(0);
+                .unwrap();
             let s_state = s.get_mut();
             s_state.is_active = my_rounded == max_undominated_neighbours_rounded_down;
             Step::Continue
@@ -104,7 +111,7 @@ pub fn find_dominating_set<G: StaticGraphViewOps>(
                 let max_support_count = s
                     .neighbours()
                     .iter()
-                    .filter(|n| !n.prev().is_dominated)
+                    .filter(|n| !n.prev().is_covered)
                     .map(|n| n.prev().support_count)
                     .max()
                     .unwrap();
@@ -142,33 +149,55 @@ pub fn find_dominating_set<G: StaticGraphViewOps>(
                 let candidate_sum = s
                     .neighbours()
                     .iter()
-                    .filter(|n| !n.prev().is_dominated)
+                    .filter(|n| !n.prev().is_covered)
                     .map(|n| n.prev().candidate_count)
                     .sum::<usize>();
                 candidate_sum <= 3 * num_undominated
             } else {
                 false
             };
-            let s_state = s.get_mut();
             if should_dominate {
-                s_state.is_dominated = true;
+                let node = s.node;
+                s.global_update(&dominating_set, node);
+                s.global_update(&covered_set, node);
+                for n in s.neighbours().iter() {
+                    s.global_update(&covered_set, n.node);
+                }
             }
             Step::Continue
         },
     );
 
-
     let step8: ATask<G, ComputeStateVec, Fdds, _> = ATask::new(
+        move |s: &mut EvalNodeView<'_, '_, &'_ G, Fdds, ComputeStateVec>| {
+            let num_undominated = s.prev().num_undominated_neighbours;
+            if num_undominated == 0 {
+                return Step::Done;
+            }
+            let is_covered = s.read(&covered_set).contains(&s.node);
+            let s_state = s.get_mut();
+            s_state.is_covered = is_covered;
+            Step::Continue 
+        },
+    );
+
+
+    let step9: ATask<G, ComputeStateVec, Fdds, _> = ATask::new(
         move |s: &mut EvalNodeView<'_, '_, &'_ G, Fdds, ComputeStateVec>| {
             if s.prev().num_undominated_neighbours == 0 {
                 return Step::Done;
             }
+            let is_covered = s
+                .read_global_state(&covered_set)
+                .map(|covered| covered.contains(&s.node))
+                .unwrap_or(false);
             let num_undominated_neighbours = s
                 .neighbours()
                 .iter()
-                .filter(|n| !n.prev().is_dominated)
+                .filter(|n| !n.prev().is_covered)
                 .count();
             let s_state = s.get_mut();
+            s_state.is_covered = is_covered;
             s_state.num_undominated_neighbours = num_undominated_neighbours;
             Step::Continue
         },
@@ -186,6 +215,7 @@ pub fn find_dominating_set<G: StaticGraphViewOps>(
             Job::new(step6),
             Job::new(step7),
             Job::new(step8),
+            Job::new(step9),
         ],
         None,
         |_, _, _, local, index| {

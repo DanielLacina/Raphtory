@@ -40,3 +40,5 @@ pub mod metrics;
 pub mod motifs;
 pub mod pathing;
 pub mod projections;
+pub mod dominating_set;
+

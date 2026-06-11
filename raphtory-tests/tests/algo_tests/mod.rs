@@ -8,6 +8,7 @@ mod embeddings;
 mod metrics;
 mod motifs;
 mod pathing;
+mod dominating_set;
 
 fn assert_eq_f64(a: f64, b: f64, precision: f64) {
     assert!((a - b).abs() < precision);

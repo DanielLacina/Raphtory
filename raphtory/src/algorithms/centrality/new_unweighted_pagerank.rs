@@ -1,20 +1,21 @@
-use std::{collections::HashMap, sync::atomic::AtomicU64};
+use std::{collections::HashMap, sync::{Arc, atomic::AtomicU64}};
 
 use crate::{
     core::state::{accumulator_id::accumulators, compute_state::ComputeStateVec},
     db::{
         api::{
-            state::{NodeState, ops::filter},
-            view::{Filter, NodeViewOps, StaticGraphViewOps, filter_ops::NodeSelect},
+            state::NodeState,
+            view::{NodeViewOps, StaticGraphViewOps, filter_ops::NodeSelect},
         }, graph::views::{filter::model::{degree_filter::DegreeFilterFactory, property_filter::ops::PropertyFilterOps}, node_subgraph::NodeSubgraph}, task::{
             context::Context,
             task::{ATask, Job, Step},
             task_runner::TaskRunner,
         }
     },
-    prelude::GraphViewOps, python::graph::node_state::NodeFilter,
+    prelude::GraphViewOps
 };
 use num_traits::abs;
+use crate::prelude::NodeFilter;
 
 #[derive(Clone, Debug, Default)]
 struct PageRankState {
@@ -58,7 +59,7 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     tol: Option<f64>,
     use_l2_norm: bool,
     damping_factor: Option<f64>,
-) -> NodeState<'_, f64, NodeSubgraph<G>> {
+) -> NodeState<'static, f64, NodeSubgraph<G>> {
     let n = g.count_nodes();
 
     let mut ctx: Context<G, ComputeStateVec> = g.into();
@@ -86,8 +87,8 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     let teleport_prob = (1f64 - damp) / n as f64;
     let factor = damp / n as f64;
 
-    let in_degree_zero_score = atomic_float::AtomicF64::new(1.0/n as f64);
-    let filtered_out_sink_contributor_count = AtomicU64::new(filtered_out_sink_contributor_count as u64);  
+    let in_degree_zero_score = Arc::new(atomic_float::AtomicF64::new(1.0 / n as f64));
+    let filtered_out_sink_contributor_count = Arc::new(AtomicU64::new(filtered_out_sink_contributor_count as u64));
 
     let max_diff = accumulators::sum::<f64>(2);
 
@@ -104,6 +105,7 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
         Step::Continue
     });
 
+    let in_degree_zero_score_step2 = Arc::clone(&in_degree_zero_score);
     let step2: ATask<G, ComputeStateVec, PageRankState, _> = ATask::new(move |s| {
         // reset score
         {
@@ -119,7 +121,7 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
 
         let (one_degree_in_neighbors, _) = one_degree_neighbors.get(&s.node).unwrap_or(&(0, 0));
 
-        let in_degree_zero_score = in_degree_zero_score.load(std::sync::atomic::Ordering::Relaxed);
+        let in_degree_zero_score = in_degree_zero_score_step2.load(std::sync::atomic::Ordering::Relaxed);
 
         s.get_mut().score += (*one_degree_in_neighbors as f64) * in_degree_zero_score;   
 
@@ -142,13 +144,15 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
         Step::Continue
     });
 
+    let filtered_out_sink_contributor_count_step4 = Arc::clone(&filtered_out_sink_contributor_count);
+    let in_degree_zero_score_step4 = Arc::clone(&in_degree_zero_score);
     let step4 = ATask::new(move |s| {
         //read total sink contribution
         let total_sink_contribution = s
             .read_global_state(&total_sink_contribution)
             .unwrap_or_default();
-        let filtered_out_contributor_count = filtered_out_sink_contributor_count.load(std::sync::atomic::Ordering::Relaxed) as f64;
-        let in_degree_zero_score = in_degree_zero_score.load(std::sync::atomic::Ordering::Relaxed);
+        let filtered_out_contributor_count = filtered_out_sink_contributor_count_step4.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let in_degree_zero_score = in_degree_zero_score_step4.load(std::sync::atomic::Ordering::Relaxed);
         // update local score with total sink contribution
         let state: &mut PageRankState = s.get_mut();
         state.score += total_sink_contribution + filtered_out_contributor_count * factor * in_degree_zero_score;
@@ -169,12 +173,14 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     });
 
 
+    let filtered_out_sink_contributor_count_step5 = Arc::clone(&filtered_out_sink_contributor_count);
+    let in_degree_zero_score_step5 = Arc::clone(&in_degree_zero_score);
     let step5 = Job::Check(Box::new(move |state| {
         let total_sink_contribution = state.read(&total_sink_contribution);
-        let filtered_out_sink_contributor_count = filtered_out_sink_contributor_count.load(std::sync::atomic::Ordering::Relaxed) as f64;
-        let prev_in_degree_zero_score = in_degree_zero_score.load(std::sync::atomic::Ordering::Relaxed);
+        let filtered_out_sink_contributor_count = filtered_out_sink_contributor_count_step5.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let prev_in_degree_zero_score = in_degree_zero_score_step5.load(std::sync::atomic::Ordering::Relaxed);
         let cur_in_degree_zero_score = (prev_in_degree_zero_score * damp + teleport_prob) + total_sink_contribution + filtered_out_sink_contributor_count * factor * prev_in_degree_zero_score;
-        in_degree_zero_score.store(cur_in_degree_zero_score, std::sync::atomic::Ordering::Relaxed);
+        in_degree_zero_score_step5.store(cur_in_degree_zero_score, std::sync::atomic::Ordering::Relaxed);
         let diff_in_degree_zero_score = abs(prev_in_degree_zero_score - cur_in_degree_zero_score);
         let max_diff_val = state.read(&max_diff).max(diff_in_degree_zero_score);
         let cont = if use_l2_norm {

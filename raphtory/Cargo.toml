@@ -97,6 +97,7 @@ display-error-chain = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 pyo3-arrow = { workspace = true, optional = true }
 pythonize = { workspace = true, optional = true }
+atomic_float = "1.1.0"
 
 
 [dev-dependencies]

@@ -69,12 +69,21 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
 
     let mut one_degree_neighbors_map = HashMap::new();
 
-    let mut zero_degree_sink_contributor_count = 0;
+    let mut zero_degree_count = 0;
+    let mut special_node_count = 0;
 
     for node in g.nodes() {
         if node.degree() == 0 {
-            zero_degree_sink_contributor_count += 1;
+            zero_degree_count += 1;
             continue;
+        }
+        if node.degree() == 1 {
+           if node.out_degree() == 0 {
+            if node.neighbours().iter().next().unwrap().degree() == 1 {
+                special_node_count += 1;
+            }   
+           }
+           continue;
         }
         let one_degree_in_neighbor_count = node.in_neighbours().iter().filter(|n| n.degree() == 1).count();
         let one_degree_out_neighbor_count = node.out_neighbours().iter().filter(|n| n.degree() == 1).count();
@@ -91,8 +100,10 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     let teleport_prob = (1f64 - damp) / n as f64;
     let factor = damp / n as f64;
 
-    let in_degree_zero_score = Arc::new(atomic_float::AtomicF64::new(0.0));
-    let zero_degree_sink_contributor_count = Arc::new(AtomicU64::new(zero_degree_sink_contributor_count as u64));
+    let in_degree_zero_score = Arc::new(atomic_float::AtomicF64::new(1f64 / n as f64));
+    let zero_degree_count = Arc::new(AtomicU64::new(zero_degree_count as u64));
+    let special_node_count = Arc::new(AtomicU64::new(special_node_count as u64));
+    let special_node_score = Arc::new(atomic_float::AtomicF64::new(1f64 / n as f64));
 
     let max_diff = accumulators::sum::<f64>(2);
 
@@ -103,6 +114,7 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     ctx.global_agg_reset(total_sink_contribution);
 
     let step1 = ATask::new(move |s| {
+        // cache out_degree in state to avoid repeated lookups
         let out_degree = s.out_degree();
         let state: &mut PageRankState = s.get_mut();
         state.out_degree = out_degree;
@@ -118,20 +130,18 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
             state.reset();
         }
 
+        // cache atomic load outside loop
+        let in_degree_zero_score = in_degree_zero_score_step2.load(std::sync::atomic::Ordering::Relaxed);
+
         for t in s.in_neighbours() {
             let prev = t.prev();
-
             s.get_mut().score += prev.score / prev.out_degree as f64;
         }
 
-        let (one_degree_in_neighbors, _) = one_degree_neighbors_step2.get(&s.node).unwrap_or(&(0, 0));
-
-        let in_degree_zero_score = in_degree_zero_score_step2.load(std::sync::atomic::Ordering::Relaxed);
-
+        let (one_degree_in_neighbors, _) = one_degree_neighbors_step2.get(&s.node).unwrap();
         s.get_mut().score += (*one_degree_in_neighbors as f64) * in_degree_zero_score;   
 
         s.get_mut().score *= damp;
-
         s.get_mut().score += teleport_prob;
 
         let one_degree_out_neighbor_score = (s.prev().score / s.prev().out_degree as f64 * damp) + teleport_prob; 
@@ -158,57 +168,73 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
         Step::Continue
     });
 
-    let zero_degree_sink_contributor_count_step4 = Arc::clone(&zero_degree_sink_contributor_count);
+    let zero_degree_count_step4 = Arc::clone(&zero_degree_count);
     let in_degree_zero_score_step4 = Arc::clone(&in_degree_zero_score);
+    let special_node_count_step4 = Arc::clone(&special_node_count);
+    let special_node_score_step4 = Arc::clone(&special_node_score);
     let step4 = ATask::new(move |s| {
         //read total sink contribution
         let total_sink_contribution = s
             .read_global_state(&total_sink_contribution)
             .unwrap_or_default();
-        let filtered_out_contributor_count = zero_degree_sink_contributor_count_step4.load(std::sync::atomic::Ordering::Relaxed) as f64;
-        let in_degree_zero_score = in_degree_zero_score_step4.load(std::sync::atomic::Ordering::Relaxed);
+        let zero_degree_count = zero_degree_count_step4.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let current_in_degree_zero_score = in_degree_zero_score_step4.load(std::sync::atomic::Ordering::Relaxed);
+        let current_special_node_count = special_node_count_step4.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let current_special_node_score = special_node_score_step4.load(std::sync::atomic::Ordering::Relaxed);
+        let score_increment = total_sink_contribution
+            + zero_degree_count * factor * current_in_degree_zero_score
+            + current_special_node_count * factor * current_special_node_score;
         let (curr_score, curr_one_degree_out_neighbor_score) = {
             // update local score with total sink contribution
             let state: &mut PageRankState = s.get_mut();
-            state.score += total_sink_contribution + filtered_out_contributor_count * factor * in_degree_zero_score;
-            state.one_degree_out_neighbor_score += total_sink_contribution + filtered_out_contributor_count * factor * in_degree_zero_score;
+            state.score += score_increment;
+            state.one_degree_out_neighbor_score += score_increment;
 
             (state.score, state.one_degree_out_neighbor_score)
         };
 
-        // update global max diff
+        // update global max diff with both score deltas (single sync instead of two)
         let prev_score = s.prev().score;
-        let md = if use_l2_norm {
+        let score_diff = if use_l2_norm {
             f64::powi(abs(prev_score - curr_score), 2)
         } else {
             abs(prev_score - curr_score)
         };
 
-        s.global_update(&max_diff, md);
-
         let prev_one_degree_out_neighbor_score = s.prev().one_degree_out_neighbor_score;
-        let md = if use_l2_norm {
+        let one_neighbor_diff = if use_l2_norm {
             f64::powi(abs(prev_one_degree_out_neighbor_score - curr_one_degree_out_neighbor_score), 2)
         } else {
             abs(prev_one_degree_out_neighbor_score - curr_one_degree_out_neighbor_score)
         };
 
-        s.global_update(&max_diff, md);
+        // batch both updates into one global_update call to reduce lock contention
+        s.global_update(&max_diff, score_diff.max(one_neighbor_diff));
 
         Step::Continue
     });
 
 
-    let zero_degree_sink_contributor_count_step5 = Arc::clone(&zero_degree_sink_contributor_count);
+    let zero_degree_count_step5 = Arc::clone(&zero_degree_count);
     let prev_in_degree_zero_score_step5 = Arc::clone(&in_degree_zero_score);
+    let special_node_count_step5 = Arc::clone(&special_node_count);
+    let special_node_score_step5 = Arc::clone(&special_node_score);
     let step5 = Job::Check(Box::new(move |state| {
         let total_sink_contribution = state.read(&total_sink_contribution);
-        let zero_degree_sink_contributor_count = zero_degree_sink_contributor_count_step5.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let zero_degree_count = zero_degree_count_step5.load(std::sync::atomic::Ordering::Relaxed) as f64;
         let prev_in_degree_zero_score = prev_in_degree_zero_score_step5.load(std::sync::atomic::Ordering::Relaxed);
-        let cur_in_degree_zero_score = teleport_prob + total_sink_contribution + zero_degree_sink_contributor_count * factor * prev_in_degree_zero_score;
+        let special_node_count = special_node_count_step5.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let prev_special_node_score = special_node_score_step5.load(std::sync::atomic::Ordering::Relaxed);
+        let contribution = total_sink_contribution
+            + zero_degree_count * factor * prev_in_degree_zero_score
+            + special_node_count * factor * prev_special_node_score;
+        let cur_in_degree_zero_score = teleport_prob + contribution;
         prev_in_degree_zero_score_step5.store(cur_in_degree_zero_score, std::sync::atomic::Ordering::Relaxed);
+        let cur_special_node_score = prev_in_degree_zero_score * damp + teleport_prob + contribution;
+        special_node_score_step5.store(cur_special_node_score, std::sync::atomic::Ordering::Relaxed);
+        let diff_in_special_node_score = abs(prev_special_node_score - cur_special_node_score);
         let diff_in_degree_zero_score = abs(prev_in_degree_zero_score - cur_in_degree_zero_score);
-        let max_diff_val = state.read(&max_diff).max(diff_in_degree_zero_score);
+        let max_diff_val = state.read(&max_diff).max(diff_in_degree_zero_score).max(diff_in_special_node_score);
         let cont = if use_l2_norm {
             let sum_d = f64::sqrt(max_diff_val);
             (sum_d) > tol * n as f64

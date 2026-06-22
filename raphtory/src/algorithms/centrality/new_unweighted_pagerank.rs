@@ -4,9 +4,8 @@ use crate::{
     core::state::{accumulator_id::accumulators, compute_state::ComputeStateVec},
     db::{
         api::{
-            state::NodeState,
             view::{NodeViewOps, StaticGraphViewOps, filter_ops::NodeSelect},
-        }, graph::views::{filter::model::{degree_filter::DegreeFilterFactory, property_filter::ops::PropertyFilterOps}, node_subgraph::NodeSubgraph}, task::{
+        }, task::{
             context::Context,
             task::{ATask, Job, Step},
             task_runner::TaskRunner,
@@ -15,6 +14,7 @@ use crate::{
     prelude::GraphViewOps
 };
 use num_traits::abs;
+use raphtory_core::entities::VID;
 use crate::prelude::NodeFilter;
 
 #[derive(Clone, Debug, Default)]
@@ -62,10 +62,8 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     tol: Option<f64>,
     use_l2_norm: bool,
     damping_factor: Option<f64>,
-) -> NodeState<'static, f64, NodeSubgraph<G>> {
+) -> HashMap<VID, f64> {
     let n = g.count_nodes();
-
-    let mut ctx: Context<G, ComputeStateVec> = g.into();
 
     let mut one_degree_neighbors_map = HashMap::new();
 
@@ -73,7 +71,7 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
     let mut special_node_count = 0;
 
     for node in g.nodes() {
-        if node.degree() == 0 {
+        if node.degree() <= 1  {
             zero_degree_count += 1;
             continue;
         }
@@ -92,7 +90,9 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
 
     let one_degree_neighbors = Arc::new(one_degree_neighbors_map);
 
-    let subgraph = g.subgraph(g.nodes().select(NodeFilter.degree().gt(1)).unwrap());
+    let subgraph = g.subgraph(g.nodes().select(NodeFilter.degree().gt(1) ).unwrap());
+
+    let mut ctx: Context<G, ComputeStateVec> = subgraph.into();
 
     let tol: f64 = tol.unwrap_or(0.000001f64);
     let damp = damping_factor.unwrap_or(0.85);
@@ -138,14 +138,16 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
             s.get_mut().score += prev.score / prev.out_degree as f64;
         }
 
-        let (one_degree_in_neighbors, _) = one_degree_neighbors_step2.get(&s.node).unwrap();
+        let (one_degree_in_neighbors, one_degree_out_neighbors) = one_degree_neighbors_step2.get(&s.node).unwrap();
         s.get_mut().score += (*one_degree_in_neighbors as f64) * in_degree_zero_score;   
 
         s.get_mut().score *= damp;
         s.get_mut().score += teleport_prob;
 
-        let one_degree_out_neighbor_score = (s.prev().score / s.prev().out_degree as f64 * damp) + teleport_prob; 
-        s.get_mut().one_degree_out_neighbor_score = one_degree_out_neighbor_score;
+        if one_degree_out_neighbors > &0 {
+            let one_degree_out_neighbor_score = (s.prev().score / s.prev().out_degree as f64 * damp) + teleport_prob; 
+            s.get_mut().one_degree_out_neighbor_score = one_degree_out_neighbor_score;
+        }
         Step::Continue
     });
 
@@ -160,9 +162,11 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
             s.global_update(&total_sink_contribution, ts_contrib);
         } else {
             let (_, one_degree_out_neighbors) = one_degree_neighbors_step3.get(&s.node).unwrap_or(&(0, 0));
-            let one_degree_out_neighbor_score = s.prev().one_degree_out_neighbor_score; 
-            let contrib = (*one_degree_out_neighbors as f64) * factor * one_degree_out_neighbor_score;
-            s.global_update(&total_sink_contribution, contrib);
+            if one_degree_out_neighbors > &0 { 
+                let one_degree_out_neighbor_score = s.prev().one_degree_out_neighbor_score; 
+                let contrib = (*one_degree_out_neighbors as f64) * factor * one_degree_out_neighbor_score;
+                s.global_update(&total_sink_contribution, contrib);
+            }
         }
 
         Step::Continue
@@ -256,10 +260,32 @@ pub fn unweighted_page_rank<G: StaticGraphViewOps>(
         vec![Job::new(step1)],
         vec![Job::new(step2), Job::new(step3), Job::new(step4), step5],
         Some(vec![PageRankState::new(num_nodes); num_nodes]),
-        |_, _, _, local, _| NodeState::new_from_eval_mapped(subgraph.clone(), local, |v| v.score),
+        |_, _, _, local, index| {
+            let in_degree_zero_score = in_degree_zero_score.load(std::sync::atomic::Ordering::Relaxed);
+            let special_node_score = special_node_score.load(std::sync::atomic::Ordering::Relaxed);
+            g.nodes().iter().map(|n| {
+                let flat_idx = index.get_id(n.node);
+                if flat_idx < local.len() {
+                    (n.node, local[flat_idx].score)
+                } else {
+                    if n.degree() == 0 {
+                        (n.node, in_degree_zero_score)
+                    } else {
+                        let lone_neighbour = n.neighbours().iter().next().unwrap();
+                        if lone_neighbour.degree() == 1 {
+                            (n.node, special_node_score)
+                        } else {
+                            let lone_flat_idx = index.get_id(lone_neighbour.node);
+                            (n.node, local[lone_flat_idx].score)
+                        }
+                    } 
+                }
+            }).collect()
+        },
         threads,
         iter_count,
         None,
         None,
     )
+
 }

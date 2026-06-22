@@ -1,0 +1,17 @@
+* [32malgo_optimization[m
+  algo_optimizations[m
+  approximate_diameter_dbv4[m
+  bellman_ford[m
+  degree_comparison[m
+  degree_filter_dbv4[m
+  degree_filtering[m
+  degree_filtering_dbv4_with_refactoring[m
+  erdos_renyi[m
+  erdos_renyl[m
+  fast_distributed_dominating_set[m
+  fast_distributed_dominating_set_dbv4[m
+  filter_refactoring[m
+  graph_gen_refactor[m
+  hits_optimization[m
+  random_attachment_refactor[m
+  test[m

@@ -22,7 +22,7 @@ use crate::{
     },
 };
 use pyo3::{pyclass, pymethods, Bound, IntoPyObject, PyResult, Python};
-use raphtory_api::core::{entities::GID, storage::timeindex::EventTime, Direction};
+use raphtory_api::core::{entities::GID, storage::timeindex::EventTime};
 use std::sync::Arc;
 
 /// Filters nodes by their ID value.
